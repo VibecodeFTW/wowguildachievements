@@ -35,8 +35,21 @@ async function getAccessToken() {
 }
 
 async function getGuildAchievements(token) {
-  const res = await fetch(`https://${REGION}.api.blizzard.com/data/wow/guild/${REALM}/${GUILD_NAME.toLowerCase()}/achievements?namespace=profile-${REGION}&locale=en_US&access_token=${token}`);
-  return res.json();
+  const url = `https://${REGION}.api.blizzard.com/data/wow/guild/${encodeURIComponent(REALM.toLowerCase())}/${encodeURIComponent(GUILD_NAME.toLowerCase())}/achievements?namespace=profile-${REGION}&locale=en_US&access_token=${token}`;
+  
+  const res = await fetch(url);
+
+  if (!res.ok) {
+    const text = await res.text(); // read raw response
+    throw new Error(`Blizzard API error ${res.status}: ${text}`);
+  }
+
+  try {
+    return await res.json();
+  } catch (err) {
+    const text = await res.text();
+    throw new Error(`Invalid JSON from Blizzard API: ${text}`);
+  }
 }
 
 async function postToDiscord(achievement) {
