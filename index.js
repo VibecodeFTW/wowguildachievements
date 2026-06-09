@@ -1,4 +1,5 @@
 const fetch = require('node-fetch');
+const fs = require('fs');
 
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const BLIZZARD_CLIENT_ID = process.env.BLIZZARD_CLIENT_ID;
@@ -7,7 +8,18 @@ const GUILD_NAME = process.env.GUILD_NAME;
 const REALM = process.env.REALM;
 const REGION = process.env.REGION || 'us';
 
-let lastAchievementId = null;
+function readLastId() {
+  try {
+    const data = fs.readFileSync('lastAchievement.json', 'utf8');
+    return JSON.parse(data).lastId;
+  } catch {
+    return null;
+  }
+}
+
+function writeLastId(id) {
+  fs.writeFileSync('lastAchievement.json', JSON.stringify({ lastId: id }, null, 2));
+}
 
 async function getAccessToken() {
   const res = await fetch(`https://${REGION}.battle.net/oauth/token`, {
@@ -45,14 +57,15 @@ async function postToDiscord(achievement) {
 
 (async () => {
   try {
+    const lastId = readLastId();
     const token = await getAccessToken();
     const data = await getGuildAchievements(token);
 
     if (data.achievements && data.achievements.length > 0) {
       const latest = data.achievements[0];
-      if (latest.id !== lastAchievementId) {
-        lastAchievementId = latest.id;
+      if (latest.id !== lastId) {
         await postToDiscord(latest);
+        writeLastId(latest.id);
         console.log(`Posted new achievement: ${latest.achievement.name}`);
       } else {
         console.log("No new achievements.");
