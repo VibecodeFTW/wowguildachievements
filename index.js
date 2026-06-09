@@ -35,12 +35,13 @@ async function getAccessToken() {
 }
 
 async function getGuildAchievements(token) {
-  const url = `https://${REGION}.api.blizzard.com/data/wow/guild/${encodeURIComponent(REALM.toLowerCase())}/${encodeURIComponent(GUILD_NAME.toLowerCase())}/achievements?namespace=profile-${REGION}&locale=en_US&access_token=${token}`;
+  const locale = REGION === 'us' ? 'en_US' : REGION === 'eu' ? 'en_GB' : 'en_US';
+  const url = `https://${REGION}.api.blizzard.com/data/wow/guild/${encodeURIComponent(REALM.toLowerCase())}/${encodeURIComponent(GUILD_NAME.toLowerCase())}/achievements?namespace=profile-${REGION}&locale=${locale}&access_token=${token}`;
   
   const res = await fetch(url);
 
   if (!res.ok) {
-    const text = await res.text(); // read raw response
+    const text = await res.text();
     throw new Error(`Blizzard API error ${res.status}: ${text}`);
   }
 
