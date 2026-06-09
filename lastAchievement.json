@@ -1,6 +1,3 @@
-.github/
-  workflows/
-    wow-achievements.yml
-index.js
-package.json
-lastAchievement.json
+{
+  "lastId": null
+}
