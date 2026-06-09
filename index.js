@@ -34,24 +34,34 @@ async function getAccessToken() {
   return data.access_token;
 }
 
+function formatForApi(name) {
+  return name
+    .toLowerCase()
+    .replace(/'/g, '')       // remove apostrophes
+    .replace(/\s+/g, '-')    // spaces to hyphens
+    .replace(/[^a-z0-9-]/g, ''); // remove other special chars
+}
+
 async function getGuildAchievements(token) {
-  const locale = REGION === 'us' ? 'en_US' : REGION === 'eu' ? 'en_GB' : 'en_US';
-  const url = `https://${REGION}.api.blizzard.com/data/wow/guild/${encodeURIComponent(REALM.toLowerCase())}/${encodeURIComponent(GUILD_NAME.toLowerCase())}/achievements?namespace=profile-${REGION}&locale=${locale}&access_token=${token}`;
-  
-  const res = await fetch(url);
+  const realmFormatted = formatForApi(REALM);
+  const guildFormatted = formatForApi(GUILD_NAME);
+
+  const url = `https://${REGION}.api.blizzard.com/data/wow/guild/${realmFormatted}/${guildFormatted}/achievements?namespace=profile-${REGION}&locale=en_US`;
+
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
 
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Blizzard API error ${res.status}: ${text}`);
   }
 
-  try {
-    return await res.json();
-  } catch (err) {
-    const text = await res.text();
-    throw new Error(`Invalid JSON from Blizzard API: ${text}`);
-  }
+  return res.json();
 }
+
 
 async function postToDiscord(achievement) {
   await fetch(WEBHOOK_URL, {
