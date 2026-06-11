@@ -1,52 +1,51 @@
+// index.js
+require('dotenv').config();
 const fetch = require('node-fetch');
-const fs = require('fs');
 
-const WEBHOOK_URL = process.env.WEBHOOK_URL;
-const BLIZZARD_CLIENT_ID = process.env.BLIZZARD_CLIENT_ID;
-const BLIZZARD_CLIENT_SECRET = process.env.BLIZZARD_CLIENT_SECRET;
-const GUILD_NAME = process.env.GUILD_NAME;
-const REALM = process.env.REALM;
-const REGION = process.env.REGION || 'us';
+// ---------- Config ----------
+const REGION = 'us';
+const LOCALE = 'en_US';
+const NAMESPACE_STATIC = `static-${REGION}`;
+const NAMESPACE_PROFILE = `profile-${REGION}`;
 
-function readLastId() {
-  try {
-    const data = fs.readFileSync('lastAchievement.json', 'utf8');
-    return JSON.parse(data).lastId;
-  } catch {
-    return null;
-  }
-}
+const GUILD_REALM_SLUG = process.env.GUILD_REALM_SLUG;   // e.g. 'area-52'
+const GUILD_NAME_SLUG = process.env.GUILD_NAME_SLUG;     // e.g. 'my-guild'
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
-function writeLastId(id) {
-  fs.writeFileSync('lastAchievement.json', JSON.stringify({ lastId: id }, null, 2));
-}
+const BNET_CLIENT_ID = process.env.BNET_CLIENT_ID;
+const BNET_CLIENT_SECRET = process.env.BNET_CLIENT_SECRET;
 
+// ---------- Helpers ----------
 async function getAccessToken() {
-  const res = await fetch(`https://${REGION}.battle.net/oauth/token`, {
-    method: 'POST',
-    body: new URLSearchParams({
-      grant_type: 'client_credentials',
-      client_id: BLIZZARD_CLIENT_ID,
-      client_secret: BLIZZARD_CLIENT_SECRET
-    })
+  const url = `https://${REGION}.battle.net/oauth/token`;
+  const body = new URLSearchParams({
+    grant_type: 'client_credentials'
   });
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization:
+        'Basic ' +
+        Buffer.from(`${BNET_CLIENT_ID}:${BNET_CLIENT_SECRET}`).toString('base64'),
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to get access token: ${res.status} ${text}`);
+  }
+
   const data = await res.json();
   return data.access_token;
 }
 
-function formatForApi(name) {
-  return name
-    .toLowerCase()
-    .replace(/'/g, '')       // remove apostrophes
-    .replace(/\s+/g, '-')    // spaces to hyphens
-    .replace(/[^a-z0-9-]/g, ''); // remove other special chars
-}
-
-async function getGuildAchievements(token) {
-  const realmFormatted = formatForApi(REALM);
-  const guildFormatted = formatForApi(GUILD_NAME);
-
-  const url = `https://${REGION}.api.blizzard.com/data/wow/guild/${realmFormatted}/${guildFormatted}/achievements?namespace=profile-${REGION}&locale=en_US`;
+async function apiFetch(path, token, namespace) {
+  const url = `https://${REGION}.api.blizzard.com${path}${
+    path.includes('?') ? '&' : '?'
+  }namespace=${namespace}&locale=${LOCALE}`;
 
   const res = await fetch(url, {
     headers: {
@@ -56,47 +55,93 @@ async function getGuildAchievements(token) {
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Blizzard API error ${res.status}: ${text}`);
+    throw new Error(`API error ${res.status} for ${url}: ${text}`);
   }
 
   return res.json();
 }
 
+// ---------- Blizzard API calls ----------
+async function getGuildAchievements(token) {
+  const path = `/data/wow/guild/${GUILD_REALM_SLUG}/${GUILD_NAME_SLUG}/achievements`;
+  const data = await apiFetch(path, token, NAMESPACE_PROFILE);
 
-async function postToDiscord(achievement) {
-  await fetch(WEBHOOK_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      username: 'WoW Guild Tracker',
-      embeds: [{
-        title: `🎉 Guild Achievement Unlocked!`,
-        description: `**${achievement.achievement.name}**\n${achievement.achievement.description}`,
-        thumbnail: { url: achievement.achievement.media?.assets?.[0]?.value || '' },
-        color: 0xFFD700
-      }]
-    })
-  });
+  // data.achievements is usually an array of { achievement: { id }, completed_timestamp, ... }
+  return data.achievements || [];
 }
 
-(async () => {
-  try {
-    const lastId = readLastId();
-    const token = await getAccessToken();
-    const data = await getGuildAchievements(token);
+async function getAchievementDetails(id, token) {
+  const path = `/data/wow/achievement/${id}`;
+  return apiFetch(path, token, NAMESPACE_STATIC);
+}
 
-    if (data.achievements && data.achievements.length > 0) {
-      const latest = data.achievements[0];
-      if (latest.id !== lastId) {
-        await postToDiscord(latest);
-        writeLastId(latest.id);
-        console.log(`Posted new achievement: ${latest.achievement.name}`);
-      } else {
-        console.log("No new achievements.");
+async function getAchievementMedia(id, token) {
+  const path = `/data/wow/media/achievement/${id}`;
+  return apiFetch(path, token, NAMESPACE_STATIC);
+}
+
+// ---------- Discord ----------
+async function postToDiscord(achievementPayload) {
+  const res = await fetch(DISCORD_WEBHOOK_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(achievementPayload)
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    console.error(`Failed to post to Discord: ${res.status} ${text}`);
+  }
+}
+
+// ---------- Main logic ----------
+async function run() {
+  try {
+    const token = await getAccessToken();
+    const guildAchievements = await getGuildAchievements(token);
+
+    // You might want to filter here (e.g., only new achievements since last run)
+    for (const entry of guildAchievements) {
+      const achievementId = entry.achievement.id;
+
+      // Fetch details + media in parallel
+      const [details, media] = await Promise.all([
+        getAchievementDetails(achievementId, token),
+        getAchievementMedia(achievementId, token)
+      ]);
+
+      const description = details.description || '';
+      const name = details.name || `Achievement #${achievementId}`;
+
+      // media.assets is usually an array; find the icon asset
+      let iconUrl = null;
+      if (media && Array.isArray(media.assets)) {
+        const iconAsset =
+          media.assets.find(a => a.key === 'icon') || media.assets[0];
+        if (iconAsset) iconUrl = iconAsset.value;
       }
+
+      // Build Discord embed
+      const embed = {
+        title: name,
+        description: description,
+        thumbnail: iconUrl ? { url: iconUrl } : undefined,
+        timestamp: new Date(entry.completed_timestamp).toISOString(),
+        footer: {
+          text: `Achievement ID: ${achievementId}`
+        }
+      };
+
+      const payload = {
+        content: `Guild achievement earned!`,
+        embeds: [embed]
+      };
+
+      await postToDiscord(payload);
     }
   } catch (err) {
-    console.error(err);
-    process.exit(1);
+    console.error('Fatal error:', err);
   }
-})();
+}
+
+run();
